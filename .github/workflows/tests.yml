@@ -1,0 +1,20 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Lua 5.1 (the version Lightroom uses)
+        run: sudo apt-get update && sudo apt-get install -y lua5.1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python test dependencies
+        run: pip install numpy pillow
+      - name: Run tests
+        run: tests/run_all.sh

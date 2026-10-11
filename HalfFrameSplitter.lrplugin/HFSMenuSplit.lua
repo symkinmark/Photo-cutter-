@@ -1,0 +1,3 @@
+-- Menu command: Library / File > Plug-in Extras > Split Half-Frame Pairs...
+local HFSMain = require 'HFSMain'
+HFSMain.run()

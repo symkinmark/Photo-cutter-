@@ -1,0 +1,772 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Half-Frame Splitter</title>
+<meta name="description" content="A Lightroom Classic plug-in that cuts half-frame film pair scans in two at the black line between the frames. Install guide and how it works.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+/* Layout: one left-aligned reading column on a light table; figures (film strip,
+   chart, dialog) step out wider than the text. Dark theme = the darkroom. */
+:root {
+  --bg: #f1f5f7;          /* light table */
+  --surface: #ffffff;
+  --fg: #16202a;          /* ink */
+  --muted: #56636e;
+  --line: #d3dce2;
+  --accent: #a94c0c;      /* colour-negative orange mask, deep enough for text */
+  --accent-soft: #f9e4d1;
+  --cut: #e3302a;         /* the plug-in's red cut line */
+  --film: #0d0f12;        /* film base, same in both themes */
+  --sprocket: #eef3f6;    /* light through the sprocket holes */
+  --edge-print: #e7a35a;  /* edge numbers printed on the film */
+  --code-bg: #e6edf1;
+  --font-display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", "Helvetica Neue", Arial, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --step--1: 0.84rem;
+  --step-0: 1rem;
+  --step-1: 1.22rem;
+  --step-2: 1.6rem;
+  --step-3: clamp(2.1rem, 1.5rem + 2.6vw, 3.3rem);
+  --radius: 10px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1317; --surface: #151c22; --fg: #e4eaee; --muted: #9aa8b3; --line: #26313a;
+    --accent: #f0a45f; --accent-soft: #3a281a; --cut: #ff5b50; --sprocket: #c4cfd6;
+    --edge-print: #e7a35a; --code-bg: #1c252d; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1317; --surface: #151c22; --fg: #e4eaee; --muted: #9aa8b3; --line: #26313a;
+  --accent: #f0a45f; --accent-soft: #3a281a; --cut: #ff5b50; --sprocket: #c4cfd6;
+  --edge-print: #e7a35a; --code-bg: #1c252d; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 400 var(--step-0)/1.6 var(--font-body);
+}
+.wrap { max-width: 1080px; margin: 0 auto; padding-inline: max(16px, 4vw); }
+.prose { max-width: 66ch; }
+h1, h2, h3 { font-family: var(--font-display); line-height: 1.12; text-wrap: balance; margin: 0; }
+h1 { font-size: var(--step-3); font-weight: 700; letter-spacing: -0.02em; }
+h2 { font-size: var(--step-2); font-weight: 700; letter-spacing: -0.01em; }
+h3 { font-size: var(--step-1); font-weight: 500; }
+p { margin: 0; }
+a { color: var(--accent); text-underline-offset: 0.18em; }
+a:focus-visible, button:focus-visible, input:focus-visible, summary:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px;
+}
+code, kbd, .mono { font-family: var(--font-mono); font-size: 0.92em; }
+code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 4px; }
+.menu { font-family: var(--font-mono); font-size: 0.9em; }
+.eyebrow {
+  font: 500 var(--step--1)/1.3 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--accent);
+}
+.muted { color: var(--muted); }
+
+/* top bar */
+.top { border-bottom: 1px solid var(--line); }
+.top .wrap { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: center; justify-content: space-between; padding-block: 14px; }
+.brand { font: 700 1.05rem/1 var(--font-display); color: var(--fg); text-decoration: none; display: inline-flex; gap: 10px; align-items: center; }
+.brand svg { flex: none; }
+.top nav { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: var(--step--1); }
+.top nav a { color: var(--muted); text-decoration: none; }
+.top nav a:hover { color: var(--fg); }
+
+/* sections */
+main > section { padding-block: clamp(40px, 6vw, 72px); border-bottom: 1px solid var(--line); }
+main > section:last-child { border-bottom: 0; }
+.section-head { display: grid; gap: 10px; margin-bottom: 28px; }
+.stack { display: grid; gap: 16px; }
+
+/* hero */
+.hero { display: grid; gap: 22px; }
+.hero .lead { font-size: var(--step-1); line-height: 1.5; max-width: 52ch; }
+.actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.button {
+  display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 10px 18px;
+  border-radius: 999px; font: 600 var(--step-0)/1 var(--font-body); text-decoration: none; cursor: pointer;
+  border: 1px solid var(--fg); background: var(--fg); color: var(--bg);
+}
+.button.secondary { background: transparent; color: var(--fg); border-color: var(--line); }
+.button:hover { filter: brightness(1.12); }
+.meta { font: 400 var(--step--1)/1.5 var(--font-mono); color: var(--muted); }
+
+/* film strip */
+.strip {
+  position: relative; background: var(--film); border-radius: 6px;
+  padding: 42px 16px 34px; margin-top: 8px;
+}
+.strip::before, .strip::after {
+  content: ""; position: absolute; left: 14px; right: 14px; height: 12px;
+  background: repeating-linear-gradient(90deg, var(--sprocket) 0 15px, transparent 15px 31px);
+  border-radius: 2px; opacity: 0.92;
+}
+.strip::before { top: 10px; }
+.strip::after { bottom: 10px; }
+.frame { position: relative; line-height: 0; }
+.frame img { width: 100%; height: auto; display: block; }
+.edge {
+  position: absolute; top: -16px; font: 500 11px/1 var(--font-mono); color: var(--edge-print);
+  letter-spacing: 0.06em; white-space: nowrap; transform: translateX(-50%);
+}
+.cutband {
+  position: absolute; top: 0; bottom: 0; left: var(--cut0, 48.3%); width: calc(var(--cut1, 51.7%) - var(--cut0, 48.3%));
+  background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--cut) 55%, transparent) 0 4px, transparent 4px 9px);
+}
+.cutline { position: absolute; top: -6px; bottom: -6px; width: 0; border-left: 2px dashed var(--cut); }
+.halflabel {
+  position: absolute; bottom: 12px; transform: translateX(-50%);
+  font: 600 13px/1 var(--font-body); color: #ffffff; background: rgb(13 15 18 / 0.72);
+  padding: 7px 10px; border-radius: 999px; white-space: nowrap;
+}
+figcaption { font-size: var(--step--1); color: var(--muted); margin-top: 12px; max-width: 70ch; }
+
+/* promises */
+.promises { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 28px 32px; }
+.promise { display: grid; gap: 6px; align-content: start; padding-top: 14px; border-top: 2px solid var(--fg); }
+.promise h3 { font-size: 1.08rem; font-weight: 700; }
+.promise p { color: var(--muted); font-size: 0.96rem; }
+
+/* steps */
+ol.steps { list-style: none; counter-reset: step; padding: 0; margin: 0; display: grid; gap: 26px; max-width: 70ch; }
+ol.steps > li { counter-increment: step; display: grid; grid-template-columns: 2.4rem minmax(0, 1fr); gap: 4px 14px; }
+ol.steps > li::before {
+  content: counter(step); grid-row: span 3;
+  width: 2.1rem; height: 2.1rem; border-radius: 50%; display: grid; place-items: center;
+  font: 700 0.95rem/1 var(--font-display); background: var(--fg); color: var(--bg);
+}
+ol.steps > li > * { grid-column: 2; min-width: 0; }
+ol.steps h3 { font-size: 1.1rem; font-weight: 700; padding-top: 4px; }
+ol.steps p + p, ol.steps p + .copybox, ol.steps .copybox + p { margin-top: 8px; }
+
+.copybox {
+  display: flex; gap: 8px; align-items: stretch; margin-top: 8px; max-width: 100%;
+  background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
+}
+.copybox code { flex: 1; min-width: 0; background: none; padding: 10px 12px; overflow-x: auto; white-space: nowrap; font-size: 0.9rem; }
+.copybox button {
+  flex: none; border: 0; border-left: 1px solid var(--line); background: var(--surface); color: var(--fg);
+  font: 500 var(--step--1)/1 var(--font-body); padding: 0 14px; cursor: pointer; min-width: 76px;
+}
+.copybox button:hover { color: var(--accent); }
+
+.note {
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 16px 18px; max-width: 70ch; display: grid; gap: 8px;
+}
+.note strong { font-weight: 600; }
+
+/* options */
+.options { display: grid; gap: 0; max-width: 76ch; border-top: 1px solid var(--line); }
+.option { display: grid; grid-template-columns: minmax(0, 15rem) minmax(0, 1fr); gap: 6px 24px; padding-block: 16px; border-bottom: 1px solid var(--line); }
+.option dt { font-weight: 600; }
+.option dd { margin: 0; color: var(--muted); }
+.option dd ul { margin: 6px 0 0; padding-left: 1.1em; }
+.default { font: 500 11px/1 var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); margin-left: 6px; }
+@media (max-width: 640px) { .option { grid-template-columns: minmax(0, 1fr); } }
+
+.tips { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 20px 32px; margin-top: 32px; }
+.tips div { display: grid; gap: 4px; align-content: start; }
+.tips h3 { font-size: 1.02rem; font-weight: 700; }
+.tips p { color: var(--muted); font-size: 0.96rem; }
+
+/* demo dialog */
+.split-2 { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 32px 40px; align-items: start; }
+@media (max-width: 860px) { .split-2 { grid-template-columns: minmax(0, 1fr); } }
+.window {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: 0 18px 50px -24px rgb(10 20 30 / 0.45); overflow: hidden;
+}
+.titlebar { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--line); font-size: var(--step--1); font-weight: 600; }
+.titlebar .dots { display: flex; gap: 6px; }
+.titlebar .dots span { width: 11px; height: 11px; border-radius: 50%; background: var(--line); }
+.titlebar .name { flex: 1; text-align: center; margin-right: 50px; }
+.window-body { padding: 16px; display: grid; gap: 12px; font-size: 0.92rem; }
+.window-body p { line-height: 1.45; }
+.preview { position: relative; line-height: 0; border: 1px solid var(--line); }
+.preview img { width: 100%; height: auto; display: block; }
+.preview .redline { position: absolute; top: 0; bottom: 0; width: 3px; margin-left: -1.5px; background: #ff2020; }
+.preview.skip .redline { display: none; }
+.control-row { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+.control-row input[type="range"] { flex: 1 1 160px; min-width: 0; accent-color: var(--cut); }
+.control-row input[type="number"] {
+  width: 5.2em; font: 500 0.92rem var(--font-mono); padding: 4px 6px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--bg); color: var(--fg); font-variant-numeric: tabular-nums;
+}
+label { cursor: pointer; }
+.radio, .check { display: flex; gap: 8px; align-items: baseline; }
+.radio input, .check input { accent-color: var(--fg); }
+.small-button {
+  font: 500 0.86rem/1 var(--font-body); padding: 7px 12px; border-radius: 7px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--bg); color: var(--fg);
+}
+.small-button:hover { border-color: var(--muted); }
+.window-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--line); }
+.small-button.primary { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.demo-status { min-height: 1.5em; font-size: var(--step--1); color: var(--accent); }
+
+ul.plain { margin: 0; padding-left: 1.1em; display: grid; gap: 8px; }
+
+/* how it works */
+.chart-box { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 14px 6px; overflow-x: auto; }
+.chart { display: block; width: 100%; min-width: 520px; height: auto; }
+.chart-band { fill: var(--accent-soft); }
+.chart-grid { stroke: var(--line); stroke-width: 1; fill: none; }
+.chart-tick { fill: var(--muted); font: 400 11px var(--font-mono); }
+.chart-axis { fill: var(--muted); font: 400 11.5px var(--font-body); }
+.chart-label { fill: var(--muted); font: 400 11px var(--font-mono); }
+.chart-threshold { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 4 4; fill: none; }
+.chart-line { stroke: var(--fg); stroke-width: 1.8; fill: none; stroke-linejoin: round; }
+.chart-cut { stroke: var(--cut); stroke-width: 2; stroke-dasharray: 5 4; fill: none; }
+
+.directions { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 24px 32px; }
+.direction { display: grid; gap: 10px; align-content: start; }
+.direction svg { width: 100%; max-width: 360px; height: auto; }
+.d-frame-a { fill: #6f8fb0; }
+.d-frame-b { fill: #c98a5e; }
+.d-gap { fill: #0d0f12; }
+.d-cut { stroke: var(--cut); stroke-width: 2.5; stroke-dasharray: 6 4; fill: none; }
+.d-label { fill: #ffffff; font: 600 13px var(--font-body); }
+.d-caption { fill: var(--muted); font: 400 12px var(--font-mono); }
+
+.quality { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 20px 32px; align-items: start; }
+.sizes { font-variant-numeric: tabular-nums; border-collapse: collapse; width: 100%; font-size: 0.95rem; }
+.sizes th, .sizes td { text-align: left; padding: 8px 10px 8px 0; border-bottom: 1px solid var(--line); }
+.sizes th { font-weight: 600; }
+.sizes td.num { font-family: var(--font-mono); font-size: 0.88rem; }
+
+/* help */
+details { border-bottom: 1px solid var(--line); max-width: 76ch; }
+details:first-of-type { border-top: 1px solid var(--line); }
+summary { cursor: pointer; padding-block: 14px; font-weight: 600; list-style: none; display: flex; justify-content: space-between; gap: 16px; }
+summary::-webkit-details-marker { display: none; }
+summary::after { content: "+"; font: 500 1.2rem/1 var(--font-mono); color: var(--muted); }
+details[open] summary::after { content: "−"; }
+details > div { padding-bottom: 16px; color: var(--muted); display: grid; gap: 8px; }
+
+footer { border-top: 1px solid var(--line); }
+footer .wrap { padding-block: 28px; display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: space-between; font-size: var(--step--1); color: var(--muted); }
+
+@media (prefers-reduced-motion: no-preference) {
+  .preview .redline { transition: left 60ms linear; }
+}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#top" aria-label="Half-Frame Splitter, back to top">
+      <svg width="30" height="20" viewBox="0 0 30 20" aria-hidden="true">
+        <rect x="0" y="0" width="30" height="20" rx="2" fill="currentColor"/>
+        <rect x="3" y="4" width="11" height="12" style="fill:var(--bg)"/>
+        <rect x="16" y="4" width="11" height="12" style="fill:var(--bg)"/>
+        <line x1="15" y1="1" x2="15" y2="19" style="stroke:var(--cut)" stroke-width="2" stroke-dasharray="3 2"/>
+      </svg>
+      Half-Frame Splitter
+    </a>
+    <nav aria-label="Sections">
+      <a href="#install">Install</a>
+      <a href="#use">Use</a>
+      <a href="#unclear">Unclear scans</a>
+      <a href="#how">How it works</a>
+      <a href="#help">Help</a>
+      <a href="https://github.com/symkinmark/Photo-cutter-">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+
+<section aria-labelledby="title">
+  <div class="wrap hero">
+    <p class="eyebrow">Lightroom Classic plug-in · half-frame 35mm</p>
+    <h1 id="title">Half-Frame Splitter</h1>
+    <p class="lead">Your half-frame scans show two pictures side by side with a black line between them. This plug-in finds the line and gives you each picture as its own photo, without touching the original.</p>
+    <div class="actions">
+      <a class="button" href="https://github.com/symkinmark/Photo-cutter-/archive/refs/heads/main.zip">
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1v9m0 0L4.5 6.5M8 10l3.5-3.5M2 13.5h12" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Download (ZIP)
+      </a>
+      <a class="button secondary" href="#install">Install guide</a>
+    </div>
+    <p class="meta">Version 1.1.0 · Lightroom Classic on macOS · JPEG and TIFF scans</p>
+
+    <figure style="margin:0">
+      <div class="strip">
+        <div class="frame" id="hero-frame">
+          <span class="edge" style="left:24%">12 ▸</span>
+          <span class="edge" style="left:76%">12A ▸</span>
+          <img src="img/pair-example.jpg" width="1500" height="968" alt="An example half-frame pair scan: mountains at sunset on the left, a city at dusk on the right, separated by a black vertical line.">
+          <div class="cutband" aria-hidden="true"></div>
+          <div class="cutline" id="hero-cut0" aria-hidden="true"></div>
+          <div class="cutline" id="hero-cut1" aria-hidden="true"></div>
+          <span class="halflabel" id="hero-l1">Half 1</span>
+          <span class="halflabel" id="hero-l2">Half 2</span>
+        </div>
+      </div>
+      <figcaption>An example pair scan, marked the way the plug-in cuts it. The hatched strip is the unexposed film between the two frames. It is left out, and each side becomes its own photo.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section aria-label="What you get">
+  <div class="wrap">
+    <div class="promises">
+      <div class="promise">
+        <h3>The original stays untouched</h3>
+        <p>Each half is a virtual copy. Your scan file and its own edits never change, and nothing is ever deleted.</p>
+      </div>
+      <div class="promise">
+        <h3>No quality loss</h3>
+        <p>A virtual copy is only a crop instruction. Lightroom always works from the full-resolution original.</p>
+      </div>
+      <div class="promise">
+        <h3>Nothing to import</h3>
+        <p>The two halves appear right away, stacked with the original scan.</p>
+      </div>
+      <div class="promise">
+        <h3>Runs only on your Mac</h3>
+        <p>No cloud, no account, no extra software. It uses Lightroom and a tool built into macOS.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="install" aria-labelledby="install-title">
+  <div class="wrap">
+    <div class="section-head prose">
+      <p class="eyebrow">About one minute</p>
+      <h2 id="install-title">Install</h2>
+      <p class="muted">You need Lightroom Classic on a Mac. You don't need to install anything else.</p>
+    </div>
+    <ol class="steps">
+      <li>
+        <h3>Download and unzip</h3>
+        <p><a href="https://github.com/symkinmark/Photo-cutter-/archive/refs/heads/main.zip">Download the ZIP</a> and double-click it. You get a folder called <code>Photo-cutter--main</code>.</p>
+      </li>
+      <li>
+        <h3>Open Lightroom’s plug-in folder</h3>
+        <p>In Finder choose <span class="menu">Go › Go to Folder…</span> (<kbd>Shift</kbd>-<kbd>Cmd</kbd>-<kbd>G</kbd>), paste this path and press Return:</p>
+        <div class="copybox">
+          <code id="modules-path">~/Library/Application Support/Adobe/Lightroom/Modules</code>
+          <button type="button" data-copy="modules-path">Copy</button>
+        </div>
+        <p class="muted">If Finder says the folder doesn’t exist, go to <code>~/Library/Application Support/Adobe/Lightroom</code> instead and make a new folder there named <code>Modules</code>.</p>
+      </li>
+      <li>
+        <h3>Drag the plug-in in</h3>
+        <p>Drag <code>HalfFrameSplitter.lrplugin</code> from the unzipped folder into <code>Modules</code>.</p>
+      </li>
+      <li>
+        <h3>Restart Lightroom Classic</h3>
+        <p>Lightroom loads everything in <code>Modules</code> by itself. To check, open <span class="menu">File › Plug-in Manager…</span>: Half-Frame Splitter should be listed as installed and running.</p>
+      </li>
+    </ol>
+
+    <div class="note" style="margin-top:32px">
+      <p><strong>Prefer Terminal?</strong> If you unzipped the download in your Downloads folder, this does steps 2 and 3 for you:</p>
+      <div class="copybox">
+        <code id="terminal-cmd">bash ~/Downloads/Photo-cutter--main/scripts/install.sh</code>
+        <button type="button" data-copy="terminal-cmd">Copy</button>
+      </div>
+      <p class="muted">Lightroom updates don’t touch the <code>Modules</code> folder, so the plug-in keeps working after you update Lightroom.</p>
+    </div>
+  </div>
+</section>
+
+<section id="use" aria-labelledby="use-title">
+  <div class="wrap">
+    <div class="section-head prose">
+      <p class="eyebrow">Every roll</p>
+      <h2 id="use-title">Use</h2>
+    </div>
+    <ol class="steps">
+      <li>
+        <h3>Select your pair scans</h3>
+        <p>In the Library, select the scans you want to split. A whole roll at once is fine.</p>
+      </li>
+      <li>
+        <h3>Open the plug-in</h3>
+        <p>Choose <span class="menu">Library › Plug-in Extras › Split Half-Frame Pairs…</span></p>
+        <p class="muted">In the Develop module it is under <span class="menu">File › Plug-in Extras</span>.</p>
+      </li>
+      <li>
+        <h3>Click Split</h3>
+        <p>Each scan gets two virtual copies, <strong>Half 1</strong> and <strong>Half 2</strong>, stacked with it. Half 1 is the left picture, or the top one if the pair is stacked. A summary lists anything that was skipped.</p>
+      </li>
+    </ol>
+
+    <h3 style="margin:44px 0 12px">Options in the window</h3>
+    <dl class="options">
+      <div class="option">
+        <dt>When the dividing line is unclear</dt>
+        <dd>
+          <ul>
+            <li><strong>Ask me</strong><span class="default">default</span>. Shows you the scan and lets you choose where to cut. <a href="#unclear">See how</a>.</li>
+            <li><strong>Split at the best guess</strong>, and add the halves to the collection <em>Needs review</em>.</li>
+            <li><strong>Don’t split</strong>, only add the original to <em>Needs review</em>.</li>
+          </ul>
+        </dd>
+      </div>
+      <div class="option">
+        <dt>Extra trim at the cut</dt>
+        <dd>Removes a little more on each side of the line so no dark sliver is left. Default 0.3% of the width, adjustable from 0 to 2%.</dd>
+      </div>
+      <div class="option">
+        <dt>Crop away black borders</dt>
+        <dd>Off by default and experimental. Useful for your own scanner TIFFs that show black film edges around the pictures.</dd>
+      </div>
+    </dl>
+
+    <div class="tips">
+      <div>
+        <h3>Fine-tune a cut</h3>
+        <p>Select the half, press <kbd>R</kbd> for the Crop tool and drag the edge, like any other crop.</p>
+      </div>
+      <div>
+        <h3>Run it again</h3>
+        <p>Scans that already have halves are skipped. To redo one, select its two halves and choose <span class="menu">Photo › Remove Photo…</span>. That removes only the copies.</p>
+      </div>
+      <div>
+        <h3>Need real files?</h3>
+        <p>Select the halves and use <span class="menu">File › Export…</span>. A 16-bit TIFF is lossless. Tick <em>Add to This Catalog</em> to keep the files in Lightroom too.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="unclear" aria-labelledby="unclear-title">
+  <div class="wrap">
+    <div class="section-head prose">
+      <p class="eyebrow">Night frames, blank frames, overlaps</p>
+      <h2 id="unclear-title">When it can’t see the line</h2>
+      <p>On film, the gap between two frames is unexposed. It scans exactly as black as the deepest shadows in a picture. Next to a dark night frame, the plug-in can’t tell where the picture stops and the gap begins. Instead of guessing silently, it shows you the scan and asks.</p>
+    </div>
+
+    <div class="split-2">
+      <figure style="margin:0">
+        <div class="window" role="group" aria-label="Example of the question window">
+          <div class="titlebar"><span class="dots" aria-hidden="true"><span></span><span></span><span></span></span><span class="name">Where should I cut?</span></div>
+          <div class="window-body">
+            <p>I can’t see the dividing line clearly in “roll12_07.tif” (1 of 2 unclear).<br>
+              <span class="muted">Reason: one picture is too dark next to the dividing line to see where it starts.</span><br>
+              How should I cut it?</p>
+            <div class="preview" id="demo-preview">
+              <img src="img/pair-night.jpg" width="1500" height="968" alt="A pair scan with a very dark night picture on the left and a city at dusk on the right. The black gap merges with the night sky.">
+              <div id="demo-lines" aria-hidden="true"></div>
+            </div>
+            <label class="radio"><input type="radio" name="demo-choice" id="demo-cut" value="cut" checked> Cut at the red line</label>
+            <div class="control-row">
+              <label for="demo-pos">Position:</label>
+              <input type="range" id="demo-pos" min="5" max="95" step="0.1" value="50">
+              <input type="number" id="demo-num" min="5" max="95" step="0.1" value="50" aria-label="Position in percent from the left">
+              <span class="muted">% from the left</span>
+            </div>
+            <div class="control-row">
+              <button type="button" class="small-button" id="demo-middle">Middle</button>
+              <button type="button" class="small-button" id="demo-guess">My best guess</button>
+            </div>
+            <label class="radio"><input type="radio" name="demo-choice" id="demo-skip" value="skip"> Don’t cut it (add the original to “Needs review”)</label>
+            <label class="check"><input type="checkbox" id="demo-rest"> Don’t ask about the other 1 unclear scan: cut at my best guess and add it to “Needs review”</label>
+            <p class="demo-status" id="demo-status" aria-live="polite"></p>
+          </div>
+          <div class="window-foot">
+            <button type="button" class="small-button" id="demo-cancel">Cancel all</button>
+            <button type="button" class="small-button primary" id="demo-ok">OK</button>
+          </div>
+        </div>
+        <figcaption>A working copy of the window, for illustration: drag the slider. In Lightroom the window looks a little different.</figcaption>
+      </figure>
+
+      <div class="stack prose">
+        <h3>What you can do</h3>
+        <ul class="plain">
+          <li><strong>Move the red line</strong> with the slider. The preview redraws as you drag, turned the way Lightroom shows the photo.</li>
+          <li><strong>My best guess</strong> puts it back where the plug-in thinks the line is. Its edge next to the brighter picture is usually exact.</li>
+          <li><strong>Middle</strong> puts the cut at 50%.</li>
+          <li><strong>Don’t cut it</strong> leaves the scan as it is and puts it in the collection <em>Half-Frame Splitter › Needs review</em>.</li>
+          <li>On a big batch, tick the box to stop asking. The rest are cut at the best guess and go into <em>Needs review</em>.</li>
+          <li><strong>Cancel all</strong> stops the whole run. Nothing is changed.</li>
+        </ul>
+        <p class="muted">The plug-in asks only after it has checked every scan, so you answer all the questions at the end instead of being interrupted. Scans you cut yourself don’t go into <em>Needs review</em>.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="how" aria-labelledby="how-title">
+  <div class="wrap">
+    <div class="section-head prose">
+      <p class="eyebrow">In theory</p>
+      <h2 id="how-title">How it works</h2>
+      <p>What happens, step by step, after you click Split.</p>
+    </div>
+
+    <ol class="steps">
+      <li>
+        <h3>A small preview is made</h3>
+        <p>The built-in macOS tool <code>sips</code> reads the scan and writes a temporary preview, 1200 pixels on the long side. Your file is only read, never written. The preview is deleted afterwards.</p>
+      </li>
+      <li>
+        <h3>Every column is measured</h3>
+        <p>For each column of pixels, the plug-in notes how bright its brightest 10% are. In a picture, almost every column has something bright in it somewhere. In the gap between the frames, the whole column is black from top to bottom, so the measurement drops sharply.</p>
+      </li>
+      <li>
+        <h3>The line is checked</h3>
+        <p>The darkest dip near the middle counts only if it is dark enough, about as wide as a frame gap (0.3% to 15% of the width), between 30% and 70% across, has a picture on both sides, and is the only one. A second pass looks at the brightest 25% instead, so a light leak over part of the gap doesn’t hide it.</p>
+      </li>
+      <li>
+        <h3>The halves are made</h3>
+        <p>Lightroom makes two virtual copies of the scan and the plug-in sets each one’s crop, cutting where the dip crosses the halfway level. Scans that fail a check are handled the way you chose: asked, guessed or skipped.</p>
+      </li>
+    </ol>
+
+    <figure style="margin:40px 0 0">
+      <div class="chart-box">
+<!-- fig:chart -->
+<svg class="chart" viewBox="0 0 720 250" role="img" aria-labelledby="chart-title chart-desc">
+<title id="chart-title">Brightness of every column of the example scan</title>
+<desc id="chart-desc">The line stays high across both pictures and drops to almost black between 48.3% and 51.7% of the width: the gap between the frames.</desc>
+<rect class="chart-band" x="367.1" y="18" width="21.7" height="188"/>
+<line class="chart-grid" x1="52" x2="704" y1="206.0" y2="206.0"/>
+<text class="chart-tick" x="44" y="210.0" text-anchor="end">0</text>
+<line class="chart-grid" x1="52" x2="704" y1="111.6" y2="111.6"/>
+<text class="chart-tick" x="44" y="115.6" text-anchor="end">128</text>
+<line class="chart-grid" x1="52" x2="704" y1="18.0" y2="18.0"/>
+<text class="chart-tick" x="44" y="22.0" text-anchor="end">255</text>
+<text class="chart-tick" x="52.0" y="224" text-anchor="middle">0%</text>
+<text class="chart-tick" x="215.0" y="224" text-anchor="middle">25%</text>
+<text class="chart-tick" x="378.0" y="224" text-anchor="middle">50%</text>
+<text class="chart-tick" x="541.0" y="224" text-anchor="middle">75%</text>
+<text class="chart-tick" x="704.0" y="224" text-anchor="middle">100%</text>
+<line class="chart-threshold" x1="52" x2="704" y1="170.6" y2="170.6"/>
+<polyline class="chart-line" points="52.9,96.9 54.7,96.9 56.5,96.9 58.3,96.9 60.1,96.9 62.0,96.9 63.8,96.9 65.6,96.9 67.4,96.9 69.2,96.9 71.0,96.9 72.8,96.9 74.6,96.9 76.5,96.9 78.3,96.9 80.1,96.9 81.9,96.9 83.7,96.9 85.5,96.9 87.3,91.0 89.1,91.0 90.9,91.0 92.8,91.0 94.6,91.0 96.4,91.0 98.2,91.0 100.0,91.0 101.8,91.0 103.6,91.0 105.4,91.0 107.2,91.0 109.0,91.0 110.9,91.0 112.7,91.0 114.5,91.0 116.3,91.0 118.1,85.1 119.9,85.1 121.7,85.1 123.5,85.1 125.3,85.1 127.2,85.1 129.0,85.1 130.8,79.2 132.6,79.2 134.4,79.2 136.2,79.2 138.0,79.2 139.8,79.2 141.7,79.2 143.5,79.2 145.3,73.3 147.1,73.3 148.9,73.3 150.7,73.3 152.5,73.3 154.3,73.3 156.1,73.3 157.9,73.3 159.8,73.3 161.6,73.3 163.4,73.3 165.2,73.3 167.0,73.3 168.8,73.3 170.6,73.3 172.4,73.3 174.2,73.3 176.1,73.3 177.9,73.3 179.7,73.3 181.5,73.3 183.3,73.3 185.1,73.3 186.9,73.3 188.7,73.3 190.6,73.3 192.4,73.3 194.2,79.2 196.0,79.2 197.8,79.2 199.6,79.2 201.4,79.2 203.2,79.2 205.0,79.2 206.8,79.2 208.7,79.2 210.5,79.2 212.3,79.2 214.1,79.2 215.9,79.2 217.7,73.3 219.5,73.3 221.3,67.4 223.2,67.4 225.0,67.4 226.8,67.4 228.6,67.4 230.4,67.4 232.2,67.4 234.0,67.4 235.8,61.5 237.6,61.5 239.4,61.5 241.3,61.5 243.1,61.5 244.9,55.6 246.7,55.6 248.5,55.6 250.3,49.7 252.1,49.7 253.9,49.7 255.8,43.8 257.6,32.0 259.4,26.1 261.2,20.2 263.0,20.2 264.8,20.2 266.6,20.2 268.4,20.2 270.2,20.2 272.1,20.2 273.9,26.1 275.7,26.1 277.5,32.0 279.3,37.9 281.1,37.9 282.9,37.9 284.7,37.9 286.5,49.7 288.4,49.7 290.2,55.6 292.0,55.6 293.8,55.6 295.6,55.6 297.4,55.6 299.2,55.6 301.0,55.6 302.8,55.6 304.6,55.6 306.5,55.6 308.3,55.6 310.1,55.6 311.9,61.5 313.7,61.5 315.5,61.5 317.3,61.5 319.1,67.4 320.9,67.4 322.8,67.4 324.6,67.4 326.4,67.4 328.2,67.4 330.0,67.4 331.8,73.3 333.6,73.3 335.4,73.3 337.2,73.3 339.1,73.3 340.9,79.2 342.7,79.2 344.5,79.2 346.3,79.2 348.1,79.2 349.9,79.2 351.7,79.2 353.6,85.1 355.4,85.1 357.2,85.1 359.0,85.1 360.8,91.0 362.6,91.0 364.4,91.0 366.2,91.0 368.0,197.2 369.9,197.2 371.7,197.2 373.5,197.2 375.3,197.2 377.1,197.2 378.9,197.2 380.7,197.2 382.5,197.2 384.3,197.2 386.1,197.2 388.0,197.2 389.8,155.9 391.6,155.9 393.4,161.8 395.2,155.9 397.0,155.9 398.8,155.9 400.6,155.9 402.4,155.9 404.3,155.9 406.1,155.9 407.9,155.9 409.7,150.0 411.5,155.9 413.3,155.9 415.1,155.9 416.9,155.9 418.8,132.3 420.6,155.9 422.4,155.9 424.2,155.9 426.0,155.9 427.8,155.9 429.6,155.9 431.4,150.0 433.2,144.1 435.1,144.1 436.9,150.0 438.7,150.0 440.5,150.0 442.3,150.0 444.1,144.1 445.9,150.0 447.7,150.0 449.5,150.0 451.4,150.0 453.2,144.1 455.0,150.0 456.8,150.0 458.6,150.0 460.4,150.0 462.2,132.3 464.0,150.0 465.8,150.0 467.6,150.0 469.5,150.0 471.3,144.1 473.1,144.1 474.9,150.0 476.7,150.0 478.5,150.0 480.3,150.0 482.1,144.1 483.9,150.0 485.8,150.0 487.6,150.0 489.4,150.0 491.2,150.0 493.0,155.9 494.8,155.9 496.6,155.9 498.4,150.0 500.2,155.9 502.1,155.9 503.9,155.9 505.7,155.9 507.5,96.9 509.3,138.2 511.1,155.9 512.9,155.9 514.7,155.9 516.5,138.2 518.4,91.0 520.2,155.9 522.0,155.9 523.8,155.9 525.6,155.9 527.4,150.0 529.2,155.9 531.0,161.8 532.9,161.8 534.7,161.8 536.5,73.3 538.3,155.9 540.1,161.8 541.9,161.8 543.7,161.8 545.5,120.5 547.3,102.8 549.1,161.8 551.0,161.8 552.8,161.8 554.6,161.8 556.4,161.8 558.2,161.8 560.0,161.8 561.8,161.8 563.6,161.8 565.5,132.3 567.3,161.8 569.1,161.8 570.9,161.8 572.7,161.8 574.5,161.8 576.3,102.8 578.1,120.5 579.9,161.8 581.8,161.8 583.6,167.7 585.4,155.9 587.2,67.4 589.0,167.7 590.8,161.8 592.6,161.8 594.4,167.7 596.2,120.5 598.0,161.8 599.9,167.7 601.7,167.7 603.5,167.7 605.3,108.7 607.1,150.0 608.9,167.7 610.7,167.7 612.5,167.7 614.4,167.7 616.2,126.4 618.0,161.8 619.8,161.8 621.6,161.8 623.4,73.3 625.2,91.0 627.0,161.8 628.8,161.8 630.6,161.8 632.5,161.8 634.3,155.9 636.1,161.8 637.9,161.8 639.7,161.8 641.5,161.8 643.3,126.4 645.1,161.8 647.0,161.8 648.8,161.8 650.6,161.8 652.4,161.8 654.2,161.8 656.0,161.8 657.8,144.1 659.6,96.9 661.4,161.8 663.2,161.8 665.1,161.8 666.9,161.8 668.7,79.2 670.5,161.8 672.3,161.8 674.1,161.8 675.9,161.8 677.7,161.8 679.5,161.8 681.4,167.7 683.2,167.7 685.0,167.7 686.8,155.9 688.6,150.0 690.4,167.7 692.2,167.7 694.0,167.7 695.9,167.7 697.7,167.7 699.5,96.9 701.3,108.7 703.1,167.7"/>
+<line class="chart-cut" x1="367.1" x2="367.1" y1="12" y2="206"/>
+<line class="chart-cut" x1="388.9" x2="388.9" y1="12" y2="206"/>
+<text class="chart-label" x="58.0" y="164.6" text-anchor="start">halfway level</text>
+<text class="chart-axis" x="378.0" y="246" text-anchor="middle">position across the scan</text>
+<text class="chart-axis" transform="translate(13 112.0) rotate(-90)" text-anchor="middle">brightness</text>
+</svg>
+<!-- /fig:chart -->
+      </div>
+      <figcaption>The real measurement the plug-in makes on the example scan at the top of this page. Both pictures stay above the halfway level, even the darker city on the right. The drop to almost black is the gap, and the dashed red lines are where it cuts.</figcaption>
+    </figure>
+
+    <h3 style="margin:52px 0 16px">Horizontal and vertical splits</h3>
+    <div class="directions">
+      <div class="direction">
+        <svg viewBox="0 0 360 200" role="img" aria-label="A landscape pair scan is cut into a left and a right half.">
+          <rect class="d-frame-a" x="20" y="20" width="155" height="150"/>
+          <rect class="d-gap" x="175" y="20" width="10" height="150"/>
+          <rect class="d-frame-b" x="185" y="20" width="155" height="150"/>
+          <line class="d-cut" x1="175" y1="12" x2="175" y2="178"/>
+          <line class="d-cut" x1="185" y1="12" x2="185" y2="178"/>
+          <text class="d-label" x="97" y="100" text-anchor="middle">Half 1</text>
+          <text class="d-label" x="262" y="100" text-anchor="middle">Half 2</text>
+          <text class="d-caption" x="180" y="196" text-anchor="middle">landscape scan → left | right</text>
+        </svg>
+        <p class="muted">The usual case. Two upright frames side by side, the line runs top to bottom.</p>
+      </div>
+      <div class="direction">
+        <svg viewBox="0 0 360 200" role="img" aria-label="A portrait pair scan is cut into a top and a bottom half.">
+          <rect class="d-frame-a" x="120" y="8" width="120" height="83"/>
+          <rect class="d-gap" x="120" y="91" width="120" height="8"/>
+          <rect class="d-frame-b" x="120" y="99" width="120" height="83"/>
+          <line class="d-cut" x1="110" y1="91" x2="250" y2="91"/>
+          <line class="d-cut" x1="110" y1="99" x2="250" y2="99"/>
+          <text class="d-label" x="180" y="54" text-anchor="middle">Half 1</text>
+          <text class="d-label" x="180" y="145" text-anchor="middle">Half 2</text>
+          <text class="d-caption" x="180" y="196" text-anchor="middle">portrait scan → top / bottom</text>
+        </svg>
+        <p class="muted">A pair scanned turned on its side. The line runs across.</p>
+      </div>
+    </div>
+    <p class="prose" style="margin-top:16px">There’s nothing to set. The plug-in looks for the line across the short side of the scan, which is where it is on a half-frame pair. On nearly square scans it tries both directions and uses the clearer line. Photos rotated in Lightroom, or by Preview or a scanner, are handled too.</p>
+
+    <h3 style="margin:52px 0 16px">Why there’s no quality loss</h3>
+    <div class="quality">
+      <div class="stack">
+        <p>A virtual copy is a set of edit instructions stored in your catalog. No pixels are copied and nothing is re-compressed. When you view, edit or export a half, Lightroom renders it from the original file at full resolution, exactly like a crop you made by hand.</p>
+        <p class="muted">The 1200-pixel preview is only used to find the line. It never ends up in your photos. The only place quality can change is a later JPEG export, the same as for any photo. A 16-bit TIFF export is lossless.</p>
+      </div>
+      <table class="sizes">
+        <caption class="muted" style="text-align:left; caption-side:bottom; padding-top:8px; font-size:var(--step--1)">Example: a 6000 × 4000 pair scan. Each half keeps every original pixel of its picture.</caption>
+        <thead><tr><th scope="col">Photo</th><th scope="col">Pixels</th><th scope="col">Source</th></tr></thead>
+        <tbody>
+          <tr><td>Original scan</td><td class="num">6000 × 4000</td><td>file on disk</td></tr>
+          <tr><td>Half 1</td><td class="num">≈ 2900 × 4000</td><td>same file</td></tr>
+          <tr><td>Half 2</td><td class="num">≈ 2900 × 4000</td><td>same file</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="help" aria-labelledby="help-title">
+  <div class="wrap">
+    <div class="section-head prose">
+      <h2 id="help-title">Updating, removing and help</h2>
+    </div>
+    <details>
+      <summary>Update to a new version</summary>
+      <div>
+        <p>Download the new ZIP, replace <code>HalfFrameSplitter.lrplugin</code> in the <code>Modules</code> folder, and restart Lightroom. Or run the Terminal command from the install guide again.</p>
+        <p>Your settings and every half you already made are kept.</p>
+      </div>
+    </details>
+    <details>
+      <summary>Remove the plug-in</summary>
+      <div>
+        <p>Quit Lightroom, delete <code>HalfFrameSplitter.lrplugin</code> from the <code>Modules</code> folder and start Lightroom again.</p>
+        <p>Your photos stay as they are. The halves are ordinary virtual copies and don’t need the plug-in.</p>
+      </div>
+    </details>
+    <details>
+      <summary>The menu item is missing</summary>
+      <div>
+        <p>Open <span class="menu">File › Plug-in Manager…</span> and check that Half-Frame Splitter is listed as installed and running.</p>
+        <p>If you once added the plug-in from another folder with the <em>Add</em> button, remove that entry. Two copies of the same plug-in conflict.</p>
+      </div>
+    </details>
+    <details>
+      <summary>“Could not select it in the current view”</summary>
+      <div>
+        <p>The plug-in has to select each photo to make its copies. Turn off the Library filter or expand the stack, then run it again.</p>
+      </div>
+    </details>
+    <details>
+      <summary>“The file is missing or its drive is not connected”</summary>
+      <div>
+        <p>Connect the drive that holds the scans, then run it again.</p>
+      </div>
+    </details>
+    <details>
+      <summary>Where is the log?</summary>
+      <div>
+        <p>The plug-in writes <code>HalfFrameSplitter.log</code> to <code>Documents/LrClassicLogs</code> (older Lightroom versions: <code>Documents/lrClassicLogs</code>). It lists what was found in every scan, so it’s the first place to look if a result surprises you.</p>
+      </div>
+    </details>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Half-Frame Splitter 1.1.0 · <a href="https://github.com/symkinmark/Photo-cutter-">Source on GitHub</a></span>
+    <span>A private project, not affiliated with Adobe. Lightroom is a trademark of Adobe.</span>
+  </div>
+</footer>
+
+<!-- fig:cuts -->
+<script>window.HFS_EXAMPLE = {"example": {"gapStart": 0.4833, "gapEnd": 0.5167}, "night": {"guess": 49.7, "gapStart": 0.4767, "gapEnd": 0.5167}};</script>
+<!-- /fig:cuts -->
+<script>
+(function () {
+  var data = window.HFS_EXAMPLE || {
+    example: { gapStart: 0.4833, gapEnd: 0.5167 },
+    night: { guess: 49.7, gapStart: 0.4767, gapEnd: 0.5167 }
+  };
+
+  // Hero: place the cut marks where the plug-in found the line.
+  var frame = document.getElementById('hero-frame');
+  if (frame) {
+    var a = data.example.gapStart * 100, b = data.example.gapEnd * 100;
+    frame.style.setProperty('--cut0', a + '%');
+    frame.style.setProperty('--cut1', b + '%');
+    document.getElementById('hero-cut0').style.left = a + '%';
+    document.getElementById('hero-cut1').style.left = b + '%';
+    document.getElementById('hero-l1').style.left = (a / 2) + '%';
+    document.getElementById('hero-l2').style.left = ((b + 100) / 2) + '%';
+  }
+
+  // Copy buttons.
+  document.querySelectorAll('[data-copy]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var el = document.getElementById(btn.getAttribute('data-copy'));
+      var text = el.textContent;
+      var done = function () { btn.textContent = 'Copied'; setTimeout(function () { btn.textContent = 'Copy'; }, 1600); };
+      var fallback = function () {
+        var range = document.createRange();
+        range.selectNodeContents(el);
+        var sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        btn.textContent = 'Press ⌘C';
+      };
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(done, fallback);
+        } else {
+          fallback();
+        }
+      } catch (e) { fallback(); }
+    });
+  });
+
+  // The question window demo.
+  var guess = data.night.guess;
+  var slider = document.getElementById('demo-pos');
+  var num = document.getElementById('demo-num');
+  var lines = document.getElementById('demo-lines');
+  var preview = document.getElementById('demo-preview');
+  var status = document.getElementById('demo-status');
+  var skip = document.getElementById('demo-skip');
+  if (!slider) return;
+
+  function drawLines(p) {
+    var at = Math.abs(p - guess) < 0.05
+      ? [data.night.gapStart * 100, data.night.gapEnd * 100]
+      : [p];
+    lines.innerHTML = '';
+    at.forEach(function (x) {
+      var d = document.createElement('div');
+      d.className = 'redline';
+      d.style.left = x + '%';
+      lines.appendChild(d);
+    });
+  }
+  function setPos(p) {
+    p = Math.min(95, Math.max(5, Math.round(p * 10) / 10));
+    slider.value = p;
+    num.value = p;
+    drawLines(p);
+    status.textContent = '';
+  }
+  slider.addEventListener('input', function () { setPos(parseFloat(slider.value)); });
+  num.addEventListener('change', function () { var v = parseFloat(num.value); if (!isNaN(v)) setPos(v); });
+  document.getElementById('demo-middle').addEventListener('click', function () { setPos(50); });
+  document.getElementById('demo-guess').addEventListener('click', function () { setPos(guess); });
+  document.querySelectorAll('input[name="demo-choice"]').forEach(function (r) {
+    r.addEventListener('change', function () { preview.classList.toggle('skip', skip.checked); status.textContent = ''; });
+  });
+  document.getElementById('demo-ok').addEventListener('click', function () {
+    var p = parseFloat(slider.value);
+    status.textContent = skip.checked
+      ? 'In Lightroom, this scan would now be left uncut and added to “Needs review”.'
+      : (Math.abs(p - guess) < 0.05
+        ? 'In Lightroom, this scan would now be cut on both sides of the guessed gap.'
+        : 'In Lightroom, this scan would now be cut at ' + p.toFixed(1) + '% from the left.');
+  });
+  document.getElementById('demo-cancel').addEventListener('click', function () {
+    status.textContent = 'In Lightroom, Cancel all stops the run. Nothing is changed.';
+  });
+  setPos(guess);
+})();
+</script>
+</body>
+</html>

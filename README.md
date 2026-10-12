@@ -1,5 +1,7 @@
 # Half-Frame Splitter for Lightroom Classic
 
+**Guide with pictures: https://symkinmark.github.io/Photo-cutter-/**
+
 A Lightroom Classic plug-in for **half-frame 35mm cameras** (Olympus Pen, Pentax 17,
 Kodak Ektar H35, Canon Demi, ...). Your scans show two pictures side by side, with a
 black line between them. The plug-in finds that black line by itself and gives you each

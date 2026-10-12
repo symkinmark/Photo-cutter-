@@ -215,6 +215,91 @@ do
 	check(o[1] == L, 'unknown code treated as AB')
 end
 
+print('--- pixel rows, BMP writing, line drawing')
+do
+	local base = assert(HFSImage.decodeBMPRows(readFile(FIX .. 'basic.bmp')))
+	check(#base.rows == base.height and #base.rows[1] == base.width * 3, 'rows have the right size')
+	for _, f in ipairs({ 'fmt_v5_32.bmp', 'fmt_v5_32_topdown.bmp', 'fmt_pil_rgba.bmp' }) do
+		local img = assert(HFSImage.decodeBMPRows(readFile(FIX .. f)))
+		local same = img.width == base.width and img.height == base.height
+		for y = 1, base.height do
+			if img.rows[y] ~= base.rows[y] then same = false break end
+		end
+		check(same, f .. ': same pixels as the 24-bit file')
+	end
+	local img16 = assert(HFSImage.decodeBMPRows(readFile(FIX .. 'fmt_16_565.bmp')))
+	local maxDiff = 0
+	for y = 1, base.height, 37 do
+		for i = 1, base.width * 3, 13 do
+			local d = math.abs(img16.rows[y]:byte(i) - base.rows[y]:byte(i))
+			if d > maxDiff then maxDiff = d end
+		end
+	end
+	check(maxDiff <= 8, '16-bit 5-6-5 decodes close to the original (max diff ' .. maxDiff .. ')')
+	local bw = assert(HFSImage.decodeBMPRows(readFile(FIX .. 'bw.bmp')))
+	local b, g, r = bw.rows[10]:byte(31, 33)
+	check(b == g and g == r, 'greyscale palette decodes to grey')
+	assert(HFSImage.decodeBMPRows(readFile(FIX .. 'fmt_4bit.bmp')))
+	assert(HFSImage.decodeBMPRows(readFile(FIX .. 'fmt_1bit.bmp')))
+
+	-- Writing and reading back gives the same pixels and the same analysis.
+	local again = assert(HFSImage.decodeBMPRows(HFSImage.encodeBMP24(base)))
+	local same = true
+	for y = 1, base.height do
+		if again.rows[y] ~= base.rows[y] then same = false break end
+	end
+	check(same, 'encodeBMP24 round trip')
+	local odd = { width = 3, height = 2, rows = { string.rep('\1\2\3', 3), string.rep('\4\5\6', 3) } }
+	local oddBack = assert(HFSImage.decodeBMPRows(HFSImage.encodeBMP24(odd)))
+	check(oddBack.rows[1] == odd.rows[1] and oddBack.rows[2] == odd.rows[2], 'row padding for odd widths')
+
+	local small = { width = 10, height = 4, rows = {} }
+	for y = 1, 4 do small.rows[y] = string.rep('\0\0\0', 10) end
+	local v = HFSImage.drawLines(small, 'x', { 0.5 }, { 255, 0, 0 }, 2)
+	check(v.rows[1]:sub(13, 18) == '\0\0\255\0\0\255' and v.rows[1]:sub(10, 12) == '\0\0\0'
+		and v.rows[1]:sub(19, 21) == '\0\0\0', 'vertical line at columns 4..5')
+	check(small.rows[1] == string.rep('\0\0\0', 10), 'drawing does not change the input')
+	local hz = HFSImage.drawLines(small, 'y', { 0.5 }, { 0, 255, 0 }, 2)
+	check(hz.rows[2] == string.rep('\0\255\0', 10) and hz.rows[3] == string.rep('\0\255\0', 10)
+		and hz.rows[1] == small.rows[1], 'horizontal line at rows 2..3')
+	local edge = HFSImage.drawLines(small, 'x', { 1.0 }, { 255, 255, 255 }, 2)
+	check(#edge.rows[1] == 30 and edge.rows[1]:sub(25, 30) == string.rep('\255', 6), 'line at the edge stays inside')
+end
+
+print('--- question dialog geometry')
+do
+	check(HFSDetect.previewRotation('AB', nil) == 0, 'AB -> 0')
+	check(HFSDetect.previewRotation('BC', nil) == 90, 'BC -> 90')
+	check(HFSDetect.previewRotation('CD', nil) == 180, 'CD -> 180')
+	check(HFSDetect.previewRotation('DA', nil) == 270, 'DA -> 270')
+	check(HFSDetect.previewRotation('BC', 6) == 0, 'BC with EXIF 6 already applied -> 0')
+	check(HFSDetect.previewRotation('AB', 6) == 270, 'EXIF 6 applied, Lightroom shows it unrotated -> 270')
+	check(HFSDetect.previewRotation(nil, nil) == 0, 'unknown -> 0')
+
+	-- Cross-check displayDirection against the rotation of a real point.
+	local function rotatePoint(x, y, deg)
+		if deg == 90 then return 1 - y, x elseif deg == 180 then return 1 - x, 1 - y
+		elseif deg == 270 then return y, 1 - x end
+		return x, y
+	end
+	for _, axis in ipairs({ 'x', 'y' }) do
+		for _, deg in ipairs({ 0, 90, 180, 270 }) do
+			local fromLeft, reversed = HFSDetect.displayDirection(axis, deg)
+			local px, py = 0.3, 0.6 -- a point on a cut at 0.3 (axis x) ...
+			if axis == 'y' then px, py = 0.6, 0.3 end -- ... or 0.3 (axis y)
+			local u, v = rotatePoint(px, py, deg)
+			local screen = fromLeft and u or v
+			local expected = reversed and 0.7 or 0.3
+			check(math.abs(screen - expected) < 1e-9, string.format('direction axis=%s rot=%d', axis, deg))
+		end
+	end
+
+	local rects = HFSDetect.cropsAt('x', 0.4, nil, 0.5)
+	check(math.abs(rects[1].right - 0.395) < 1e-9 and math.abs(rects[2].left - 0.405) < 1e-9, 'cut at chosen position')
+	rects = HFSDetect.cropsAt('y', 0.6, nil, 0)
+	check(rects[1].bottom == 0.6 and rects[2].top == 0.6 and rects[1].left == 0 and rects[2].right == 1, 'horizontal chosen cut')
+end
+
 print('--- version numbers')
 do
 	local info = dofile(root .. '/HalfFrameSplitter.lrplugin/Info.lua')

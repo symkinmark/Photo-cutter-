@@ -102,7 +102,7 @@ local function run(label, opts, build, verify)
 	for _, m in ipairs({ 'HFSMain', 'HFSImage', 'HFSDetect' }) do package.loaded[m] = nil end
 	local state = LrMock.setup {
 		tempDir = TEMP, prefs = opts.prefs, vcMode = opts.vcMode, dialogResult = opts.dialogResult,
-		ignoreCopyName = opts.ignoreCopyName,
+		ignoreCopyName = opts.ignoreCopyName, answers = opts.answers,
 	}
 	state.cancelProgress = opts.cancelProgress
 	local HFSMain = require 'HFSMain'
@@ -191,9 +191,11 @@ local function verifyStandard(trim)
 	end
 end
 
-run('standard run (sips keeps stored orientation)', {}, buildStandard, verifyStandard(0.003))
+local SPLIT = { fallback = 'split' }
 
-run('sips applies EXIF orientation', { orient = true }, buildStandard, function(state, P)
+run('standard run (sips keeps stored orientation)', { prefs = SPLIT }, buildStandard, verifyStandard(0.003))
+
+run('sips applies EXIF orientation', { orient = true, prefs = SPLIT }, buildStandard, function(state, P)
 	verifyStandard(0.003)(state, P)
 	local probed = false
 	for _, l in ipairs(state.log) do
@@ -202,7 +204,7 @@ run('sips applies EXIF orientation', { orient = true }, buildStandard, function(
 	check(probed, 'JPEG probe detected that sips applies the orientation')
 end)
 
-run('createVirtualCopies needs write access', { vcMode = 'inside' }, buildStandard, verifyStandard(0.003))
+run('createVirtualCopies needs write access', { vcMode = 'inside', prefs = SPLIT }, buildStandard, verifyStandard(0.003))
 
 run('fallback = skip, no extra trim', { prefs = { fallback = 'skip', extraTrim = 0 } }, buildStandard, function(state, P)
 	checkSplit('pair.jpg', P.pair, truth['pair.jpg'], 0, 'A')
@@ -225,7 +227,7 @@ end, function(state, P)
 	check(msg and msg.message:find('hidden.jpg: could not select it', 1, true), 'hidden reported')
 end)
 
-run('Lightroom ignores the copy name', { ignoreCopyName = true }, buildStandard, verifyStandard(0.003))
+run('Lightroom ignores the copy name', { ignoreCopyName = true, prefs = SPLIT }, buildStandard, verifyStandard(0.003))
 
 run('second copy fails', {}, function(state)
 	local P = {}
@@ -240,6 +242,121 @@ end, function(state, P)
 	local msg = state.messages[#state.messages]
 	check(msg and msg.message:find('only "Half 1" was made', 1, true), 'partial result reported')
 	check(msg and msg.message:find('Split 1 pair into', 1, true), 'only the good pair counted')
+end)
+
+-- Where is the red line in a preview JPEG? Returns the fraction from the
+-- left of red columns and from the top of red rows (-1 if none).
+local function redLine(path)
+	local p = io.popen('python3 -c "import sys, numpy as np\nfrom PIL import Image\n'
+		.. 'a = np.asarray(Image.open(sys.argv[1]).convert(\'RGB\')).astype(int)\n'
+		.. 'red = (a[:,:,0] > 170) & (a[:,:,1] < 110) & (a[:,:,2] < 110)\n'
+		.. 'c = np.where(red.mean(0) > 0.6)[0]; r = np.where(red.mean(1) > 0.6)[0]\n'
+		.. 'print(c.mean() / a.shape[1] if len(c) else -1, r.mean() / a.shape[0] if len(r) else -1)" '
+		.. '"' .. path .. '"')
+	local out = p:read('*a')
+	p:close()
+	local x, y = out:match('^(%S+)%s+(%S+)')
+	return tonumber(x), tonumber(y)
+end
+
+local function buildUnclear(state)
+	local P = {}
+	P.pair = state.newPhoto { path = WORK .. '/pair.jpg' }
+	P.night = state.newPhoto { path = WORK .. '/night.jpg' }
+	P.onenight = state.newPhoto { path = WORK .. '/onenight.jpg' }
+	-- the same night scan, turned 180 degrees in Lightroom
+	P.nightRot = state.newPhoto { path = WORK .. '/night.jpg', fileName = 'night_rotated.jpg',
+		developSettings = { orientation = 'CD' } }
+	return P, { P.pair, P.night, P.onenight, P.nightRot }
+end
+
+local seen = {}
+run('ask: you choose where to cut', {
+	answers = {
+		function(props, args)
+			-- night.jpg: no usable guess, so the line starts in the middle
+			check(args.cancelVerb == 'Cancel all', 'question has "Cancel all"')
+			check(props.position == 50, 'night: starts in the middle')
+			local x = redLine(props.preview)
+			check(x and math.abs(x - 0.5) < 0.01, 'night: red line drawn in the middle (' .. tostring(x) .. ')')
+			seen[#seen + 1] = props.preview
+			props.position = 40
+			x = redLine(props.preview)
+			check(x and math.abs(x - 0.4) < 0.01, 'night: red line follows the slider to 40% (' .. tostring(x) .. ')')
+			seen[#seen + 1] = props.preview
+			return 'ok'
+		end,
+		function(props)
+			-- onenight.jpg: the guess is offered; keep it
+			local t = truth['onenight.jpg']
+			check(props.position ~= 50 and math.abs(props.position / 100 - (t.gapStart + t.gapEnd) / 2) < 0.03,
+				'onenight: starts at the best guess (' .. tostring(props.position) .. ')')
+			local x = redLine(props.preview)
+			check(x and math.abs(x - props.position / 100) < 0.02, 'onenight: red lines at the guess')
+			return 'ok'
+		end,
+		function(props)
+			-- night_rotated.jpg is shown turned 180 degrees, like in Lightroom
+			props.position = 30
+			local x = redLine(props.preview)
+			check(x and math.abs(x - 0.3) < 0.01, 'rotated: red line 30% from the left on screen (' .. tostring(x) .. ')')
+			return 'ok'
+		end,
+	},
+}, buildUnclear, function(state, P)
+	check(state.questions == 3, 'asked about the 3 unclear scans only')
+	for _, path in ipairs(seen) do
+		check(io.open(path) == nil, 'preview file removed: ' .. path)
+	end
+	local trim = 0.003
+	local h = halvesOf(P.night)
+	check(h[1] and h[2], 'night: split')
+	if h[1] then
+		local s1, s2 = h[1].applied[1].settings, h[2].applied[1].settings
+		check(near(s1.CropRight, 0.4 - trim, 1e-6) and near(s2.CropLeft, 0.4 + trim, 1e-6), 'night: cut at 40%')
+	end
+	checkSplit('onenight (kept guess)', P.onenight, {
+		axis = 'x', gapStart = truth['onenight.jpg'].gapEnd - 0.04, gapEnd = truth['onenight.jpg'].gapEnd,
+	}, trim, 'A')
+	local hr = halvesOf(P.nightRot)
+	check(hr[1] and hr[2], 'rotated: split')
+	if hr[1] then
+		-- 30% from the left on screen = 70% in the stored file; Half 1 is
+		-- the part on the left of the screen = the stored right part.
+		local s1 = hr[1].applied[1].settings
+		check(near(s1.CropLeft, 0.7 + trim, 1e-6) and near(s1.CropRight, 1, 1e-9), 'rotated: Half 1 is the right part of the file, cut at 70%')
+	end
+	checkSplit('pair.jpg', P.pair, truth['pair.jpg'], trim, 'A')
+	local review, coll = reviewSet(state)
+	check(coll == nil, 'nothing needs review: you chose every cut')
+	local msg = state.messages[#state.messages].message
+	check(msg:find('Split 4 pairs', 1, true) and msg:find('3 of them were cut where you chose', 1, true), 'summary mentions your choices')
+end)
+
+run('ask: skip one, best guess for the rest', {
+	answers = {
+		function(props)
+			props.choice = 'skip'
+			props.rest = true
+			return 'ok'
+		end,
+	},
+}, buildUnclear, function(state, P)
+	check(state.questions == 1, 'asked only once')
+	check(#P.night.virtualCopies == 0, 'night: not cut')
+	local review = reviewSet(state)
+	check(review[P.night], 'night original in review')
+	local h, hr = halvesOf(P.onenight), halvesOf(P.nightRot)
+	check(h[1] and review[h[1]] and review[h[2]], 'onenight cut at the guess and in review')
+	check(hr[1] and review[hr[1]] and review[hr[2]], 'rotated night cut in the middle and in review')
+	checkSplit('pair.jpg', P.pair, truth['pair.jpg'], 0.003, 'A')
+end)
+
+run('ask: cancel all', {
+	answers = { function() return 'cancel' end },
+}, buildUnclear, function(state, P)
+	check(#P.pair.virtualCopies == 0 and #P.night.virtualCopies == 0, 'nothing created')
+	check(state.messages[1] and state.messages[1].message:find('Cancelled', 1, true), 'cancel message')
 end)
 
 run('dialog cancelled', { dialogResult = 'cancel' }, buildStandard, function(state, P)

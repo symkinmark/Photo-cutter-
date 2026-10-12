@@ -20,6 +20,7 @@ local floor = math.floor
 local min = math.min
 local byte = string.byte
 local char = string.char
+local unpack = unpack or table.unpack
 
 -- Number of pixels decoded per string.byte call. Keeps the number of returned
 -- values well below Lua's C-stack limit (8000 in Lua 5.1).
@@ -145,12 +146,14 @@ function M.parseBMPHeader(data)
 	if bpp <= 8 then
 		local count = h.colorsUsed
 		if count == 0 then count = 2 ^ bpp end
-		h.palette = {}
+		h.palette = {}    -- index -> R + 2G + B
+		h.paletteBGR = {} -- index -> 3-byte string B, G, R
 		for i = 0, count - 1 do
 			local o = paletteStart + i * paletteEntrySize
 			if o + 3 > #data then break end
 			local b, g, r = byte(data, o + 1, o + 3)
 			h.palette[i] = r + 2 * g + b
+			h.paletteBGR[i] = char(b, g, r)
 		end
 	end
 
@@ -298,6 +301,124 @@ function M.decodeBMPHistograms(data, bins)
 		colHist = colHist,
 		rowHist = rowHist,
 	}
+end
+
+--------------------------------------------------------------------------------
+-- Pixel rows (for the "where should I cut?" preview)
+
+--- Decodes a BMP into 24-bit pixel rows.
+-- Returns { width, height, rows } where rows[1] is the top row, each a string
+-- of width * 3 bytes in B, G, R order; or nil, error message.
+function M.decodeBMPRows(data)
+	local h, err = M.parseBMPHeader(data)
+	if not h then return nil, err end
+	local W, H, bpp = h.width, h.height, h.bpp
+
+	-- Per-pixel reader for everything except 24 bpp: returns B, G, R.
+	local readPixel
+	if bpp == 16 or bpp == 32 then
+		local rs, rb = maskInfo(h.redMask)
+		local gs, gb = maskInfo(h.greenMask)
+		local bs, bb = maskInfo(h.blueMask)
+		if not (rs and gs and bs) then return nil, 'BMP has empty colour masks' end
+		local function channel(v, shift, bits)
+			return floor(floor(v / 2 ^ shift) % 2 ^ bits * 255 / (2 ^ bits - 1) + 0.5)
+		end
+		local readValue = bpp == 16 and u16le or u32le
+		local size = bpp / 8
+		readPixel = function(rowOffset, x)
+			local v = readValue(data, rowOffset + x * size)
+			return channel(v, bs, bb), channel(v, gs, gb), channel(v, rs, rb)
+		end
+	elseif bpp <= 8 then
+		local black = char(0, 0, 0)
+		readPixel = function(rowOffset, x)
+			local bitPos = x * bpp
+			local v = byte(data, rowOffset + floor(bitPos / 8) + 1)
+			local idx = floor(v / 2 ^ (8 - bpp - bitPos % 8)) % 2 ^ bpp
+			return byte(h.paletteBGR[idx] or black, 1, 3)
+		end
+	end
+
+	local rows = {}
+	for r = 0, H - 1 do
+		local y = h.topDown and r or (H - 1 - r)
+		local rowOffset = h.dataOffset + r * h.stride -- 0-based
+		local row
+		if bpp == 24 then
+			row = data:sub(rowOffset + 1, rowOffset + W * 3)
+		else
+			local parts = {}
+			local x = 0
+			while x < W do
+				local n = min(CHUNK_PIXELS, W - x)
+				local t = {}
+				for i = 0, n - 1 do
+					local b, g, rr = readPixel(rowOffset, x + i)
+					t[#t + 1] = b
+					t[#t + 1] = g
+					t[#t + 1] = rr
+				end
+				parts[#parts + 1] = char(unpack(t))
+				x = x + n
+			end
+			row = table.concat(parts)
+		end
+		rows[y + 1] = row
+	end
+	return { width = W, height = H, rows = rows }
+end
+
+--- Encodes 24-bit pixel rows (as returned by decodeBMPRows) as a BMP file.
+function M.encodeBMP24(img)
+	local W, H = img.width, img.height
+	local stride = floor((24 * W + 31) / 32) * 4
+	local pad = string.rep('\0', stride - W * 3)
+	local imageSize = stride * H
+	local function le16(n) return char(n % 256, floor(n / 256) % 256) end
+	local function le32(n)
+		return char(n % 256, floor(n / 256) % 256, floor(n / 65536) % 256, floor(n / 16777216) % 256)
+	end
+	local parts = {
+		'BM', le32(54 + imageSize), le32(0), le32(54),
+		le32(40), le32(W), le32(H), le16(1), le16(24), le32(0), le32(imageSize),
+		le32(2835), le32(2835), le32(0), le32(0),
+	}
+	for y = H, 1, -1 do -- BMP rows run bottom-up
+		parts[#parts + 1] = img.rows[y]
+		parts[#parts + 1] = pad
+	end
+	return table.concat(parts)
+end
+
+--- Returns a copy of the image with lines drawn across it.
+-- axis 'x': vertical lines at the given fractions of the width;
+-- axis 'y': horizontal lines at fractions of the height.
+-- color: { r, g, b }; thickness in pixels.
+function M.drawLines(img, axis, positions, color, thickness)
+	local W, H = img.width, img.height
+	local px = char(color[3], color[2], color[1])
+	thickness = thickness or 2
+	local rows = {}
+	for y = 1, H do rows[y] = img.rows[y] end
+	local n = axis == 'x' and W or H
+	for _, pos in ipairs(positions) do
+		local c0 = floor(pos * n - thickness / 2 + 0.5)
+		if c0 < 0 then c0 = 0 end
+		if c0 > n - thickness then c0 = n - thickness end
+		local c1 = c0 + thickness -- exclusive, 0-based
+		if axis == 'x' then
+			local seg = string.rep(px, c1 - c0)
+			for y = 1, H do
+				local row = rows[y]
+				rows[y] = row:sub(1, c0 * 3) .. seg .. row:sub(c1 * 3 + 1)
+			end
+		else
+			local full = string.rep(px, W)
+			for y = c0 + 1, c1 do rows[y] = full end
+		end
+	end
+	return { width = W, height = H, rows = rows }
 end
 
 --------------------------------------------------------------------------------

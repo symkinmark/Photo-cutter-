@@ -80,6 +80,7 @@ function M.setup(opts)
 		dialogResult = opts.dialogResult or 'ok',
 		vcMode = opts.vcMode or 'outside',
 		ignoreCopyName = opts.ignoreCopyName or false,
+		answers = opts.answers or {},
 		tempDir = assert(opts.tempDir),
 		executed = {},
 		log = {},
@@ -170,12 +171,35 @@ function M.setup(opts)
 		switchToModule = function(m) state.module = m; state.views[#state.views + 1] = 'module:' .. m end,
 		showView = function(v) state.views[#state.views + 1] = 'view:' .. v end,
 	}
-	modules.LrBinding = { makePropertyTable = function() return {} end }
+	-- Property tables notify observers on change, like Lightroom's.
+	modules.LrBinding = {
+		makePropertyTable = function()
+			local data, observers = {}, {}
+			local t = {}
+			function t:addObserver(key, fn)
+				observers[key] = observers[key] or {}
+				table.insert(observers[key], fn)
+			end
+			return setmetatable(t, {
+				__index = data,
+				__newindex = function(_, k, v)
+					data[k] = v
+					for _, fn in ipairs(observers[k] or {}) do fn(t, k, v) end
+				end,
+			})
+		end,
+	}
 	modules.LrDialogs = {
 		message = function(title, msg, style)
 			state.messages[#state.messages + 1] = { title = title, message = msg, style = style }
 		end,
 		presentModalDialog = function(args)
+			if args.title == 'Where should I cut?' then
+				state.questions = (state.questions or 0) + 1
+				local answer = table.remove(state.answers, 1)
+				assert(answer, 'mock: unexpected question dialog')
+				return answer(args.contents.args.bind_to_object, args, state)
+			end
 			state.dialog = args
 			return state.dialogResult
 		end,
@@ -224,6 +248,7 @@ function M.setup(opts)
 			return r and 0 or 1
 		end,
 		pcall = pcall,
+		startAsyncTask = function(fn) fn() end,
 		sleep = function() end,
 		yield = function() end,
 	}

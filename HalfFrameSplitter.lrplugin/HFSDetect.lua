@@ -438,6 +438,45 @@ function M.orderForDisplay(rects, lrOrientation)
 	return { rects[1], rects[2] }
 end
 
+-- Clockwise rotation (degrees) that turns the stored pixels into what
+-- Lightroom shows, per Lightroom orientation code; and per EXIF orientation.
+local lrDegrees = { AB = 0, BC = 90, CD = 180, DA = 270 }
+local exifDegrees = { [3] = 180, [6] = 90, [8] = 270 }
+
+--- Clockwise rotation that turns the analysed image the way Lightroom shows
+-- the photo. exifApplied: the EXIF orientation that was already applied to
+-- the analysed image (nil if none was).
+function M.previewRotation(lrOrientation, exifApplied)
+	local deg = lrDegrees[lrOrientation or 'AB'] or 0
+	deg = deg - (exifDegrees[exifApplied or 1] or 0)
+	return deg % 360
+end
+
+--- How a cut along `axis` of the analysed image looks on screen after
+-- turning it by `rotation` degrees clockwise.
+-- Returns fromLeft (true: position counts from the left, false: from the
+-- top) and reversed (true: screen position = 1 - analysed position).
+function M.displayDirection(axis, rotation)
+	local upright = rotation == 0 or rotation == 180
+	local fromLeft = (axis == 'x') == upright
+	local reversed
+	if axis == 'x' then
+		reversed = rotation == 180 or rotation == 270
+	else
+		reversed = rotation == 90 or rotation == 180
+	end
+	return fromLeft, reversed
+end
+
+--- Crops for a cut at a chosen position (fraction along `axis` of the
+-- analysed image).
+function M.cropsAt(axis, position, borders, extraTrimPercent)
+	return (M.computeCrops({
+		axis = axis, found = true, confident = true,
+		gapStart = position, gapEnd = position, borders = borders,
+	}, { extraTrimPercent = extraTrimPercent }))
+end
+
 --- Lightroom develop settings for a crop rectangle in the stored frame.
 function M.cropSettings(r)
 	return {

@@ -2,7 +2,7 @@
 """Stand-in for macOS `sips` used by the plugin flow test on Linux.
 
 Supports exactly what the plugin calls:
-    sips -s format bmp [-Z <max>] <input> --out <output>
+    sips -s format bmp|jpeg [-Z <max>] [-r <degrees clockwise>] <input> --out <output>
 
 FAKE_SIPS_ORIENT=1 makes it rotate pixels according to the EXIF/TIFF
 orientation tag (so both possible real-world behaviours can be tested).
@@ -14,7 +14,7 @@ from PIL import Image, ImageOps
 
 
 def main(argv):
-    fmt, maxdim, out, inputs = None, None, None, []
+    fmt, maxdim, rotate, out, inputs = None, None, 0, None, []
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -26,13 +26,16 @@ def main(argv):
         elif a == "-Z":
             maxdim = int(argv[i + 1])
             i += 2
+        elif a == "-r":
+            rotate = int(argv[i + 1])
+            i += 2
         elif a == "--out":
             out = argv[i + 1]
             i += 2
         else:
             inputs.append(a)
             i += 1
-    if fmt != "bmp" or not out or len(inputs) != 1:
+    if fmt not in ("bmp", "jpeg") or not out or len(inputs) != 1:
         print("fake sips: unsupported arguments %r" % argv)
         return 2
     try:
@@ -47,9 +50,11 @@ def main(argv):
         w, h = img.size
         s = maxdim / max(w, h)
         img = img.resize((max(1, round(w * s)), max(1, round(h * s))), Image.LANCZOS)
+    if rotate:
+        img = img.rotate(-rotate, expand=True)  # Pillow turns counter-clockwise
     if img.mode not in ("RGB", "L"):
         img = img.convert("RGB")
-    img.save(out, "BMP")
+    img.save(out, "BMP" if fmt == "bmp" else "JPEG")
     print("%s\n  %s" % (inputs[0], out))
     return 0
 

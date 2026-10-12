@@ -54,17 +54,29 @@ happened.
 
 ### When the line is unclear
 
-Sometimes the plug-in can't be sure where to cut. This happens with very dark night
-frames (the black line and black shadows look the same on film), frames that touch or
-overlap, or a blank frame. Those pairs go into the collection
-**Half-Frame Splitter → Needs review**. You choose what happens to them:
+Sometimes the plug-in can't see where to cut. This happens with very dark night frames
+(on film, the black line and black shadows look the same), frames that touch or
+overlap, or a blank frame. By default it **asks you**. After checking all the other
+scans, it shows each unclear one in a window:
 
-- **Split at the best guess (or the middle) and add to "Needs review"** (default).
-  Usually right or nearly right. Check them and fix any that are off.
+- a preview of the scan, turned the way Lightroom shows it, with a **red line** where
+  it would cut. The line starts at its best guess, or in the middle if it has none.
+- a **slider** to move the line. The preview redraws as you drag.
+- **Middle** and **My best guess** buttons.
+- **Don't cut it**, which puts the original in the collection
+  **Half-Frame Splitter → Needs review**.
+- for big batches, a tick box to stop asking and cut the rest at the best guess.
+  Those go into "Needs review" so you can check them.
+
+**Cancel all** stops the whole run without changing anything.
+
+If you'd rather not be asked, choose one of the other options in the main window:
+
+- **Split at the best guess (or the middle) and add to "Needs review".**
 - **Do not split; only add the original to "Needs review".**
 
-To fix or fine-tune a cut, select the half, press **R** (the Crop tool) and drag the
-edge, just like any other crop.
+To fine-tune any cut later, select the half, press **R** (the Crop tool) and drag the
+edge, like any other crop.
 
 ### Options
 

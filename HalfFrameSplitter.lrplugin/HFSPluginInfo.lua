@@ -16,7 +16,7 @@ return {
 							.. 'cropped at the black line between the frames. Originals are never changed.\n\n'
 							.. 'Use: select the pair scans, then Library > Plug-in Extras > Split Half-Frame Pairs... '
 							.. '(or File > Plug-in Extras in the Develop module).\n\n'
-							.. 'Unclear pairs are collected in "Half-Frame Splitter > Needs review". '
+							.. 'When the line is unclear it shows you the scan and asks where to cut. '
 							.. 'A log is written to HalfFrameSplitter.log in the Lightroom logs folder '
 							.. '(Documents/LrClassicLogs).',
 						width_in_chars = 70,

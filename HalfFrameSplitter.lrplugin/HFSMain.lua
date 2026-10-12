@@ -33,9 +33,10 @@ local HFSDetect = require 'HFSDetect'
 
 local M = {}
 
-M.VERSION = '1.0.0'
+M.VERSION = '1.1.0'
 M.SIPS = '/usr/bin/sips'
 M.ANALYSIS_SIZE = 1200      -- long side of the analysis preview, in pixels
+M.QUESTION_SIZE = 560       -- long side of the preview shown when asking
 M.BINS = 32                 -- brightness histogram bins
 M.HALF_NAMES = { 'Half 1', 'Half 2' }
 M.COLLECTION_SET = 'Half-Frame Splitter'
@@ -43,7 +44,8 @@ M.REVIEW_COLLECTION = 'Needs review'
 M.TITLE = 'Half-Frame Splitter'
 
 M.DEFAULTS = {
-	fallback = 'split',   -- 'split': best guess + review, 'skip': only mark for review
+	fallback = 'ask',     -- 'ask': show the scan and ask, 'split': best guess + review,
+	                      -- 'skip': only mark for review
 	extraTrim = 0.3,      -- percent of the long side, removed on each side of the cut
 	trimBorders = false,
 }
@@ -165,24 +167,39 @@ function M.analyzePhoto(path, lrOrientation, settings)
 	if not img then return nil, 'could not read the preview (' .. tostring(decodeErr) .. ')' end
 
 	local det = HFSDetect.analyze(img, { trimBorders = settings.trimBorders })
+	local analysis = {
+		det = det,
+		path = path,
+		lrOrientation = lrOrientation,
+		exifOrientation = exifOrientation,
+		-- the EXIF orientation sips already applied to its preview, if any
+		exifApplied = (exifOrientation and exifOrientation ~= 1 and kind and M.sipsAppliesOrientation(kind))
+			and exifOrientation or nil,
+	}
 	local rects, method = HFSDetect.computeCrops(det, { extraTrimPercent = settings.extraTrim })
-
-	-- Lightroom's crop values refer to the pixels as stored in the file. If
-	-- sips turned the preview upright, map the crops back.
-	if exifOrientation and exifOrientation ~= 1 and kind and M.sipsAppliesOrientation(kind) then
-		rects = {
-			HFSDetect.exifRectToStored(rects[1], exifOrientation),
-			HFSDetect.exifRectToStored(rects[2], exifOrientation),
-		}
-	end
-	rects = HFSDetect.orderForDisplay(rects, lrOrientation)
+	analysis.rects = M.finalizeRects(rects, analysis)
+	analysis.method = method
 
 	log('%s: %dx%d axis=%s found=%s confident=%s gap=%.4f..%.4f contrast=%.0f method=%s exif=%s lr=%s %s',
 		path, img.width, img.height, tostring(det.axis), tostring(det.found), tostring(det.confident),
 		det.gapStart or -1, det.gapEnd or -1, det.contrast or -1, method,
 		tostring(exifOrientation), tostring(lrOrientation), table.concat(det.reasons, '; '))
 
-	return { det = det, rects = rects, method = method }
+	return analysis
+end
+
+--- Turns two crops measured on the analysed image into Lightroom crops,
+-- ordered as shown on screen ("Half 1" first).
+function M.finalizeRects(rects, analysis)
+	-- Lightroom's crop values refer to the pixels as stored in the file. If
+	-- sips turned the preview upright, map the crops back.
+	if analysis.exifApplied then
+		rects = {
+			HFSDetect.exifRectToStored(rects[1], analysis.exifApplied),
+			HFSDetect.exifRectToStored(rects[2], analysis.exifApplied),
+		}
+	end
+	return HFSDetect.orderForDisplay(rects, analysis.lrOrientation)
 end
 
 --------------------------------------------------------------------------------
@@ -289,10 +306,15 @@ end
 --------------------------------------------------------------------------------
 -- Dialog
 
+function M.validFallback(v)
+	if v == 'split' or v == 'skip' or v == 'ask' then return v end
+	return M.DEFAULTS.fallback
+end
+
 function M.showDialog(context, count)
 	local prefs = LrPrefs.prefsForPlugin()
 	local props = LrBinding.makePropertyTable(context)
-	props.fallback = (prefs.fallback == 'skip') and 'skip' or 'split'
+	props.fallback = M.validFallback(prefs.fallback)
 	props.extraTrim = tonumber(prefs.extraTrim) or M.DEFAULTS.extraTrim
 	props.trimBorders = prefs.trimBorders == true
 
@@ -311,6 +333,11 @@ function M.showDialog(context, count)
 		f:group_box {
 			title = 'When the dividing line is unclear',
 			fill_horizontal = 1,
+			f:radio_button {
+				title = 'Ask me: show the scan and let me choose where to cut',
+				value = bind 'fallback',
+				checked_value = 'ask',
+			},
 			f:radio_button {
 				title = 'Split at the best guess (or the middle) and add to "Needs review"',
 				value = bind 'fallback',
@@ -348,7 +375,7 @@ function M.showDialog(context, count)
 	local extraTrim = tonumber(props.extraTrim) or M.DEFAULTS.extraTrim
 	if extraTrim < 0 then extraTrim = 0 elseif extraTrim > 2 then extraTrim = 2 end
 	local settings = {
-		fallback = props.fallback == 'skip' and 'skip' or 'split',
+		fallback = M.validFallback(props.fallback),
 		extraTrim = extraTrim,
 		trimBorders = props.trimBorders == true,
 	}
@@ -356,6 +383,180 @@ function M.showDialog(context, count)
 	prefs.extraTrim = settings.extraTrim
 	prefs.trimBorders = settings.trimBorders
 	return settings
+end
+
+--------------------------------------------------------------------------------
+-- "I can't see the line - where should I cut?"
+
+--- Renders the scan small, as 24-bit pixel rows (analysed orientation).
+function M.loadQuestionPreview(path)
+	local out = tempPath('bmp')
+	runSips(string.format('-s format bmp -Z %d %s --out %s', M.QUESTION_SIZE, shellQuote(path), shellQuote(out)))
+	local data = readFile(out)
+	deleteTemp(out)
+	if not data then return nil end
+	return (HFSImage.decodeBMPRows(data))
+end
+
+--- Writes a JPEG of the preview with red lines at `positions` (fractions
+-- along `axis` of the analysed image), turned `rotation` degrees clockwise
+-- so it looks like it does in Lightroom. Returns the JPEG path or nil.
+function M.writeMarkedPreview(preview, axis, positions, rotation)
+	local thickness = math.max(2, math.floor(math.max(preview.width, preview.height) / 250))
+	local marked = HFSImage.drawLines(preview, axis, positions, { 255, 32, 32 }, thickness)
+	local bmp = tempPath('bmp')
+	local jpg = tempPath('jpg')
+	if not writeFile(bmp, HFSImage.encodeBMP24(marked)) then return nil end
+	local rotate = rotation ~= 0 and string.format('-r %d ', rotation) or ''
+	runSips('-s format jpeg ' .. rotate .. shellQuote(bmp) .. ' --out ' .. shellQuote(jpg))
+	deleteTemp(bmp)
+	if not LrFileUtils.exists(jpg) then return nil end
+	return jpg
+end
+
+--- Shows one unclear scan and asks where to cut it.
+-- Returns { action = 'cut', rects = ..., position = percent } or
+-- { action = 'skip' } or { action = 'cancel' }; plus rest = true when the
+-- remaining unclear scans should use the best guess without asking.
+function M.askWhereToCut(context, item, index, count, settings)
+	local analysis = item.analysis
+	local det = analysis.det
+	local axis = det.axis or 'x'
+	local rotation = HFSDetect.previewRotation(analysis.lrOrientation, analysis.exifApplied)
+	local fromLeft, reversed = HFSDetect.displayDirection(axis, rotation)
+
+	-- Positions: fractions of the analysed image <-> percent on screen.
+	local function toScreen(pos)
+		local v = (reversed and (1 - pos) or pos) * 100
+		return math.floor(v * 10 + 0.5) / 10
+	end
+	local function fromScreen(percent)
+		local p = percent / 100
+		return reversed and (1 - p) or p
+	end
+
+	local guess = (det.found and det.usableGuess) and (det.gapStart + det.gapEnd) / 2 or nil
+	local guessPercent = guess and toScreen(guess)
+	local function isGuess(percent)
+		return guessPercent ~= nil and math.abs(percent - guessPercent) < 0.05
+	end
+	-- What to draw: the edges of the guessed band, or the chosen cut line.
+	local function linesFor(percent)
+		if isGuess(percent) then return { det.gapStart, det.gapEnd } end
+		return { fromScreen(percent) }
+	end
+
+	local props = LrBinding.makePropertyTable(context)
+	props.position = guessPercent or 50
+	props.choice = 'cut'
+	props.rest = false
+
+	local preview = M.loadQuestionPreview(analysis.path)
+	local files, closed = {}, false
+	local function render()
+		if not preview then return end
+		local jpg = M.writeMarkedPreview(preview, axis, linesFor(tonumber(props.position) or 50), rotation)
+		if not jpg then return end
+		if closed then
+			deleteTemp(jpg)
+		else
+			files[#files + 1] = jpg
+			props.preview = jpg
+		end
+	end
+	render()
+
+	-- Redraw the line while the slider moves (one redraw at a time).
+	local busy, dirty = false, false
+	props:addObserver('position', function()
+		if busy then
+			dirty = true
+			return
+		end
+		busy = true
+		LrTasks.startAsyncTask(function()
+			repeat
+				dirty = false
+				LrTasks.pcall(render)
+			until not dirty or closed
+			busy = false
+		end)
+	end)
+
+	local f = LrView.osFactory()
+	local bind = LrView.bind
+	local reason = table.concat(det.reasons, '; ')
+	local c = { bind_to_object = props, spacing = f:control_spacing() }
+	c[#c + 1] = f:static_text {
+		title = string.format('I can\'t see the dividing line clearly in "%s" (%d of %d unclear).\n'
+			.. 'Reason: %s.\nHow should I cut it?', item.name, index, count, reason),
+		width_in_chars = 70,
+		height_in_lines = 3,
+	}
+	if preview and props.preview then
+		local w, h = preview.width, preview.height
+		if rotation == 90 or rotation == 270 then w, h = h, w end
+		c[#c + 1] = f:picture { value = bind 'preview', width = w, height = h, frame_width = 1 }
+	else
+		c[#c + 1] = f:static_text { title = '(No preview available - the position is still applied.)' }
+	end
+	c[#c + 1] = f:radio_button {
+		title = 'Cut at the red line',
+		value = bind 'choice',
+		checked_value = 'cut',
+	}
+	c[#c + 1] = f:row {
+		f:static_text { title = 'Position:' },
+		f:slider { value = bind 'position', min = 5, max = 95, width = 300 },
+		f:edit_field { value = bind 'position', min = 5, max = 95, precision = 1, width_in_digits = 5 },
+		f:static_text { title = fromLeft and '% from the left' or '% from the top' },
+	}
+	local buttons = {
+		f:push_button { title = 'Middle', action = function() props.position = 50 end },
+	}
+	if guessPercent then
+		buttons[#buttons + 1] = f:push_button {
+			title = 'My best guess',
+			action = function() props.position = guessPercent end,
+		}
+	end
+	c[#c + 1] = f:row(buttons)
+	c[#c + 1] = f:radio_button {
+		title = 'Don\'t cut it (add the original to "Needs review")',
+		value = bind 'choice',
+		checked_value = 'skip',
+	}
+	if count - index > 0 then
+		c[#c + 1] = f:checkbox {
+			title = string.format('Don\'t ask about the other %d unclear scan%s: cut at my best guess '
+				.. 'and add them to "Needs review"', count - index, count - index == 1 and '' or 's'),
+			value = bind 'rest',
+		}
+	end
+
+	local result = LrDialogs.presentModalDialog {
+		title = 'Where should I cut?',
+		contents = f:column(c),
+		actionVerb = 'OK',
+		cancelVerb = 'Cancel all',
+	}
+	closed = true
+	for _, path in ipairs(files) do deleteTemp(path) end
+
+	if result ~= 'ok' then return { action = 'cancel' } end
+	local rest = props.rest == true
+	if props.choice == 'skip' then return { action = 'skip', rest = rest } end
+
+	local percent = tonumber(props.position) or 50
+	if percent < 1 then percent = 1 elseif percent > 99 then percent = 99 end
+	local rects
+	if isGuess(percent) then
+		rects = HFSDetect.computeCrops(det, { extraTrimPercent = settings.extraTrim })
+	else
+		rects = HFSDetect.cropsAt(axis, fromScreen(percent), det.borders, settings.extraTrim)
+	end
+	log('%s: cut chosen by user at %.1f%% %s', item.name, percent, fromLeft and 'from the left' or 'from the top')
+	return { action = 'cut', rects = M.finalizeRects(rects, analysis), position = percent, rest = rest }
 end
 
 --------------------------------------------------------------------------------
@@ -379,6 +580,10 @@ local function summary(report)
 	if nSplit > 0 then
 		parts[#parts + 1] = string.format('Split %d pair%s into %d halves ("Half 1" and "Half 2", stacked with the original).',
 			nSplit, nSplit == 1 and '' or 's', nSplit * 2)
+		if (report.chosen or 0) > 0 then
+			parts[#parts] = parts[#parts] .. string.format(' %d of them %s cut where you chose.',
+				report.chosen, report.chosen == 1 and 'was' or 'were')
+		end
 	else
 		parts[#parts + 1] = 'No photos were split.'
 	end
@@ -399,6 +604,15 @@ end
 
 --------------------------------------------------------------------------------
 -- Main
+
+--- A split at the best guess (or the middle), marked for review.
+function M.guessJob(photo, name, analysis)
+	local how = analysis.method == 'middle' and 'split in the middle' or 'split at the best guess'
+	return {
+		photo = photo, name = name, rects = analysis.rects,
+		review = table.concat(analysis.det.reasons, '; ') .. ' - ' .. how,
+	}
+end
 
 function M.process(context)
 	if WIN_ENV then
@@ -421,6 +635,7 @@ function M.process(context)
 	local report = { split = {}, review = {}, skipped = {}, errors = {} }
 	local jobs = {}
 	local reviewPhotos = {}
+	local unclear = {}
 
 	local progress = LrProgressScope {
 		title = 'Splitting half-frame pairs',
@@ -468,9 +683,10 @@ function M.process(context)
 			elseif settings.fallback == 'skip' then
 				report.review[#report.review + 1] = { name = name, reason = reason .. ' - not split' }
 				reviewPhotos[#reviewPhotos + 1] = photo
+			elseif settings.fallback == 'ask' then
+				unclear[#unclear + 1] = { photo = photo, name = name, analysis = analysis }
 			else
-				local how = analysis.method == 'middle' and 'split in the middle' or 'split at the best guess'
-				jobs[#jobs + 1] = { photo = photo, name = name, rects = analysis.rects, review = reason .. ' - ' .. how }
+				jobs[#jobs + 1] = M.guessJob(photo, name, analysis)
 			end
 		end)
 		if not ok then
@@ -483,6 +699,28 @@ function M.process(context)
 		progress:done()
 		LrDialogs.message(M.TITLE, 'Cancelled. Nothing was changed.', 'info')
 		return
+	end
+
+	-- 1b. Ask about the scans where the line could not be seen.
+	local askRest = true
+	for i, item in ipairs(unclear) do
+		if askRest then
+			progress:setCaption(string.format('Waiting for your answer (%d of %d)', i, #unclear))
+			local answer = M.askWhereToCut(context, item, i, #unclear, settings)
+			if answer.action == 'cancel' then
+				progress:done()
+				LrDialogs.message(M.TITLE, 'Cancelled. Nothing was changed.', 'info')
+				return
+			elseif answer.action == 'skip' then
+				report.review[#report.review + 1] = { name = item.name, reason = 'you chose not to cut it' }
+				reviewPhotos[#reviewPhotos + 1] = item.photo
+			else
+				jobs[#jobs + 1] = { photo = item.photo, name = item.name, rects = answer.rects, chosen = true }
+			end
+			if answer.rest then askRest = false end
+		else
+			jobs[#jobs + 1] = M.guessJob(item.photo, item.name, item.analysis)
+		end
 	end
 
 	-- 2. Create the virtual copies.
@@ -529,6 +767,7 @@ function M.process(context)
 				report.errors[#report.errors + 1] = { name = job.name, reason = reason }
 			else
 				report.split[#report.split + 1] = { name = job.name }
+				if job.chosen then report.chosen = (report.chosen or 0) + 1 end
 			end
 			if job.review and job.halves[1] then
 				report.review[#report.review + 1] = { name = job.name, reason = job.review }

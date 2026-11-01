@@ -125,9 +125,11 @@ start Lightroom again. Your photos, including all halves, stay as they are.
   it again.
 - **"the file is missing or its drive is not connected".** Connect the drive that holds
   the scans.
-- **A log file** called `HalfFrameSplitter.log` is written to `Documents/LrClassicLogs`
-  (on older Lightroom versions `Documents/lrClassicLogs`). It lists what was found for
-  every photo, so it's the first place to look if a result surprises you.
+- **A log file** called `HalfFrameSplitter.log` is written to
+  `~/Library/Logs/Adobe/Lightroom/LrClassicLogs`. To open it, in Finder choose
+  **Go → Go to Folder...** and paste that path. (Older Lightroom versions put it in
+  `Documents/LrClassicLogs` instead.) It lists what was found for every photo, so it's
+  the first place to look if a result surprises you.
 
 ## How it works
 

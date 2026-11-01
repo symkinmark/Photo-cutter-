@@ -17,8 +17,8 @@ return {
 							.. 'Use: select the pair scans, then Library > Plug-in Extras > Split Half-Frame Pairs... '
 							.. '(or File > Plug-in Extras in the Develop module).\n\n'
 							.. 'When the line is unclear it shows you the scan and asks where to cut. '
-							.. 'A log is written to HalfFrameSplitter.log in the Lightroom logs folder '
-							.. '(Documents/LrClassicLogs).',
+							.. 'A log, HalfFrameSplitter.log, is written to '
+							.. '~/Library/Logs/Adobe/Lightroom/LrClassicLogs.',
 						width_in_chars = 70,
 						height_in_lines = 8,
 					},
